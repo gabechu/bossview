@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/avatar.svg" width="160" alt="bossview mascot"></p>
+<p align="center"><img src="assets/mascot.svg" width="160" alt="bossview mascot"></p>
 
 # bossview
 
