@@ -52,15 +52,29 @@ board_exists() {
   ' "$board"
 }
 
-# The terminal has to outlive `sidebar open`: cmux closes a workspace once its last terminal exits.
+wait_for_board() {
+  for _ in {1..20}; do
+    cmux list-panels --workspace "$1" | grep -q customSidebar && return
+    sleep 0.5
+  done
+  echo "The board did not open in $1" >&2
+  exit 1
+}
+
+# `sidebar open` targets the workspace of the terminal it runs in, so the new workspace's
+# own terminal opens the board. That shell must stay alive until cmux closes it: if it
+# exits on its own, cmux closes the whole workspace.
 open_board() {
   if board_exists; then
     echo "Board workspace '$board' already exists"
     return
   fi
-  local ref
+  local ref terminal
   ref=$(cmux workspace create --name "$board" --description "What Claude needs from you" --cwd "$HOME" \
     --command 'cmux sidebar open bossview; exec "$SHELL" -l' | grep -o 'workspace:[0-9]*' | head -1)
+  wait_for_board "$ref"
+  terminal=$(cmux list-panels --workspace "$ref" | grep terminal | grep -o 'surface:[0-9]*' | head -1)
+  cmux close-surface --workspace "$ref" --surface "$terminal" --force >/dev/null
   cmux workspace-action --workspace "$ref" --action set-color --color "#D97757" >/dev/null
   cmux workspace-action --workspace "$ref" --action pin >/dev/null
   cmux workspace-action --workspace "$ref" --action move-top >/dev/null
