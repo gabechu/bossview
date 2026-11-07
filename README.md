@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/avatar.svg" width="160" alt="bossview mascot"></p>
+
 # bossview
 
 A cmux board of your Claude Code sessions, sorted by what each one needs from you.

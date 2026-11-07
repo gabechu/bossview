@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#FFF0F3"/>
+  <g fill="#FFC8D4">
+    <path d="M78 116 l8 18 18 8 -18 8 -8 18 -8 -18 -18 -8 18 -8z"/>
+    <path d="M430 86 l6 13 13 6 -13 6 -6 13 -6 -13 -13 -6 13 -6z"/>
+    <path d="M446 300 l5 11 11 5 -11 5 -5 11 -5 -11 -11 -5 11 -5z"/>
+    <circle cx="72" cy="330" r="7"/>
+    <circle cx="410" cy="190" r="5"/>
+  </g>
+  <ellipse cx="256" cy="452" rx="150" ry="16" fill="#3D2C2C" opacity="0.08"/>
+  <g stroke="#3D2C2C" stroke-width="9" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M104 336 C104 196 172 140 256 140 C340 140 408 196 408 336 C408 400 352 436 256 436 C160 436 104 400 104 336 Z" fill="#FFD3B6"/>
+    <path d="M204 150 L192 92 L230 120 L256 78 L282 120 L320 92 L308 150 Z" fill="#FFD166"/>
+  </g>
+  <g fill="#FF9AA2">
+    <circle cx="192" cy="90" r="9"/>
+    <circle cx="256" cy="76" r="10"/>
+    <circle cx="320" cy="90" r="9"/>
+  </g>
+  <g fill="#3D2C2C">
+    <ellipse cx="200" cy="246" rx="18" ry="22"/>
+    <ellipse cx="312" cy="246" rx="18" ry="22"/>
+  </g>
+  <g fill="#FFFFFF">
+    <circle cx="206" cy="237" r="7"/>
+    <circle cx="318" cy="237" r="7"/>
+    <circle cx="194" cy="255" r="3.5"/>
+    <circle cx="306" cy="255" r="3.5"/>
+  </g>
+  <g fill="#FF9AA2" opacity="0.85">
+    <ellipse cx="164" cy="284" rx="22" ry="13"/>
+    <ellipse cx="348" cy="284" rx="22" ry="13"/>
+  </g>
+  <path d="M238 280 Q247 293 256 282 Q265 293 274 280" fill="none" stroke="#3D2C2C" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#3D2C2C" stroke-width="8" stroke-linejoin="round">
+    <rect x="160" y="318" width="192" height="124" rx="16" fill="#FFFFFF"/>
+    <rect x="222" y="304" width="68" height="24" rx="8" fill="#D97757"/>
+    <ellipse cx="160" cy="384" rx="20" ry="17" fill="#FFD3B6"/>
+    <ellipse cx="352" cy="384" rx="20" ry="17" fill="#FFD3B6"/>
+  </g>
+  <g>
+    <rect x="186" y="344" width="32" height="15" rx="5" fill="#FF8FA3"/>
+    <rect x="186" y="366" width="32" height="15" rx="5" fill="#FF8FA3"/>
+    <rect x="186" y="388" width="32" height="15" rx="5" fill="#FF8FA3"/>
+    <rect x="226" y="344" width="32" height="15" rx="5" fill="#B8A9F5"/>
+    <rect x="226" y="366" width="32" height="15" rx="5" fill="#B8A9F5"/>
+    <rect x="266" y="344" width="32" height="15" rx="5" fill="#8FD3F5"/>
+    <rect x="306" y="344" width="22" height="15" rx="5" fill="#9BE3B5"/>
+    <rect x="306" y="366" width="22" height="15" rx="5" fill="#9BE3B5"/>
+  </g>
+</svg>
