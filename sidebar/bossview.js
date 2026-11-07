@@ -11,6 +11,8 @@ const TOKEN = {
   claude: "#D97757",
 };
 
+const KAWAII = { body: "#FFD3B6", ink: "#3D2C2C", blush: "#FF9AA2" };
+
 const FONT = { "2xs": 10.5, xs: 12, smMd: 11.5, title: 15 };
 const RADIUS_LG = 10;
 const SWATCH = 8;
@@ -208,9 +210,27 @@ function column(lane) {
   ]).frame({ maxWidth: "infinity", maxHeight: "infinity" });
 }
 
+// cmux sidebars can't load image files, so the mascot is drawn from shapes.
+function avatar(needs) {
+  const eye = () => Circle({ size: 3.5 }).fill(KAWAII.ink);
+  const cheek = () => Capsule().fill(KAWAII.blush).frame({ width: 5, height: 3 });
+  return ZStack([
+    Rectangle().fill(KAWAII.body).frame({ width: 30, height: 30 }).cornerRadius(11),
+    VStack({ spacing: 1 }, [
+      HStack({ spacing: 9 }, [eye(), eye()]),
+      HStack({ spacing: 3 }, [
+        cheek(),
+        Text(() => (needs().length ? "o" : "ᴗ")).font(8).weight("bold").color(KAWAII.ink),
+        cheek(),
+      ]),
+    ]),
+  ]);
+}
+
 function topBar() {
   const needs = inLane(NEEDS.id);
-  return HStack({ spacing: 12 }, [
+  return HStack({ spacing: 10 }, [
+    avatar(needs),
     Text("Board").font(FONT.title).weight("semibold").color("primary"),
     Spacer(),
     Text(() => (needs().length ? `${needs().length} need${needs().length === 1 ? "s" : ""} you` : "All clear"))
