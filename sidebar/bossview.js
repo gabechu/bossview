@@ -32,14 +32,14 @@ const HIDDEN_RUN = /^(.+?)([\u200b\u200c\u200d\u2060]{16,})$/;
 const TRIAGE = ["blocked", "approve", "decide", "review", "done"];
 
 const TRIAGE_META = {
-  blocked: { lane: "needs", rank: 0, label: "Blocked", icon: "exclamationmark.octagon" },
-  approve: { lane: "needs", rank: 1, label: "Approve", icon: "lock.shield" },
-  decide: { lane: "needs", rank: 2, label: "Decide", icon: "questionmark.bubble" },
-  waiting: { lane: "needs", rank: 3, label: "Waiting", icon: "ellipsis.bubble" },
-  review: { lane: "review", rank: 4, label: "Review", icon: "eye" },
-  untriaged: { lane: "review", rank: 5, label: "Not triaged", icon: "circle.dashed" },
-  working: { lane: "working", rank: 6, label: "Working", icon: "arrow.triangle.2.circlepath" },
-  done: { lane: "close", rank: 7, label: "Done", icon: "checkmark.circle" },
+  blocked: { lane: "needs", label: "Blocked", icon: "exclamationmark.octagon" },
+  approve: { lane: "needs", label: "Approve", icon: "lock.shield" },
+  decide: { lane: "needs", label: "Decide", icon: "questionmark.bubble" },
+  waiting: { lane: "needs", label: "Waiting", icon: "ellipsis.bubble" },
+  review: { lane: "review", label: "Review", icon: "eye" },
+  untriaged: { lane: "review", label: "Not triaged", icon: "circle.dashed" },
+  working: { lane: "working", label: "Working", icon: "arrow.triangle.2.circlepath" },
+  done: { lane: "close", label: "Done", icon: "checkmark.circle" },
 };
 
 const epoch = () => data.clock()?.epoch ?? 0;
@@ -106,21 +106,16 @@ function toSession(ws, a) {
     ws, a, triage,
     surfaceId: tab?.surfaceId ?? a.surfaceId,
     lane: meta.lane,
-    rank: meta.rank,
     icon: meta.icon,
     label: meta.label,
     name: clean(tab?.title) || clean(a.title) || ws.title,
     location: [folderName(a.directory ?? ws.directory) || ws.title, ws.branch].filter(Boolean).join(" / "),
     ask: askText(triage, verdict, tab),
-    since: a.sinceEpoch ?? a.lastActivityAt ?? 0,
+    since: a.lastActivityAt ?? a.sinceEpoch ?? 0,
   };
 }
 
-// Most urgent first; among equals, whoever has waited longest. Working shows newest first.
-function byAttention(x, y) {
-  if (x.rank !== y.rank) return x.rank - y.rank;
-  return x.lane === "working" ? y.since - x.since : x.since - y.since;
-}
+const byRecency = (x, y) => y.since - x.since;
 
 const sessions = computed(() => {
   const out = [];
@@ -129,7 +124,7 @@ const sessions = computed(() => {
       if (a.kind === "claude" && a.status !== "ended") out.push(toSession(ws, a));
     }
   }
-  out.sort(byAttention);
+  out.sort(byRecency);
   return out;
 });
 
