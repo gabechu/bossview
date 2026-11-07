@@ -161,8 +161,12 @@ function isCurrent(panelId, gen) {
   }
 }
 
+// Stop can fire before the final reply is flushed to the transcript, so prefer
+// the copy Claude Code hands the hook directly.
 function runJob(job) {
-  const result = triageSession(lastExchange(job.transcriptPath), job.notice);
+  const exchange = lastExchange(job.transcriptPath);
+  if (job.reply) exchange.reply = job.reply.slice(-CONTEXT_CHARS);
+  const result = triageSession(exchange, job.notice);
   if (isCurrent(job.panelId, job.gen)) setAsk(job.workspaceId, job.panelId, result);
 }
 
@@ -198,6 +202,7 @@ function handleHook(input) {
     gen: bumpGeneration(panelId),
     transcriptPath: input.transcript_path,
     notice: input.notification_type === "permission_prompt" ? input.message : "",
+    reply: input.last_assistant_message ?? "",
   };
   spawn(process.execPath, [process.argv[1], "--job"], {
     detached: true,
