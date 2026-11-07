@@ -216,29 +216,29 @@ function column(lane) {
   ]).frame({ maxWidth: "infinity", maxHeight: "infinity" });
 }
 
-// cmux sidebars can't load image files, so this redraws assets/mascot.svg from
-// shapes, outlining each one by stacking it on a slightly larger ink copy.
+// cmux sidebars can't load image files, so this redraws assets/mascot.svg from shapes.
 function outlined(color, width, height, radius) {
-  return ZStack([
-    Rectangle().fill(KAWAII.ink).frame({ width, height }).cornerRadius(radius),
-    Rectangle().fill(color).frame({ width: width - 3, height: height - 3 }).cornerRadius(radius - 1.5),
-  ]);
+  return Rectangle().fill(color).frame({ width, height }).cornerRadius(radius)
+    .borderColor(KAWAII.ink).borderWidth(2);
 }
 
 function avatar(needs) {
-  const eye = () => Circle({ size: 3.5 }).fill(KAWAII.ink);
+  const eye = () => Circle({ size: 4 }).fill(KAWAII.ink);
   const cheek = () => Capsule().fill(KAWAII.blush).frame({ width: 5, height: 3 });
-  const block = (color) => Rectangle().fill(color).frame({ width: 2.5, height: 4 }).cornerRadius(1);
-  return ZStack([
+  const block = (color) => Rectangle().fill(color).frame({ width: 3, height: 4 }).cornerRadius(1);
+  return ZStack({ alignment: "center" }, [
     outlined(KAWAII.body, 32, 30, 13),
-    VStack({ spacing: 1 }, [
+    VStack({ alignment: "center", spacing: 1 }, [
       HStack({ spacing: 8 }, [eye(), eye()]),
       HStack({ spacing: 3 }, [
         cheek(),
         Text(() => (needs().length ? "o" : "ᴗ")).font(7).weight("bold").color(KAWAII.ink),
         cheek(),
       ]),
-      ZStack([outlined(KAWAII.board, 15, 9, 3), HStack({ spacing: 1.5 }, KAWAII.blocks.map(block))]),
+      ZStack({ alignment: "center" }, [
+        outlined(KAWAII.board, 16, 10, 3),
+        HStack({ spacing: 1 }, KAWAII.blocks.map(block)),
+      ]),
     ]),
   ]);
 }
