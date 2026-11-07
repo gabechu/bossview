@@ -1,10 +1,23 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const CLAUDE = process.env.BOSSVIEW_CLAUDE ?? "/opt/homebrew/bin/claude";
+// cmux puts a claude shim first on PATH that wraps every call like a user session;
+// the triage call has to reach the real binary.
+function realClaude() {
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (!dir || dir.includes("cmux-cli-shims")) continue;
+    try {
+      accessSync(join(dir, "claude"), constants.X_OK);
+      return join(dir, "claude");
+    } catch {}
+  }
+  return "claude";
+}
+
+const CLAUDE = process.env.BOSSVIEW_CLAUDE ?? realClaude();
 const CMUX = process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
 const STATE_DIR = join(homedir(), ".bossview");
 const TRANSCRIPT_TAIL_BYTES = 400_000;

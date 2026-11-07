@@ -23,26 +23,22 @@ Click a card to jump to its tab.
 
 ## Install
 
+From a cmux terminal:
+
 ```sh
 git clone https://github.com/gabechu/bossview.git ~/code/bossview
-cd ~/code/bossview
-./install.sh               # links the board into ~/.config/cmux/sidebars
-./install-claude-hook.sh   # adds the hook to ~/.claude/settings.json (backs it up first)
+~/code/bossview/install.sh
 ```
 
-Restart running Claude sessions so they pick up the hook.
+The installer links the board into `~/.config/cmux/sidebars`, adds the hook to `~/.claude/settings.json` (backing it up first), and creates a pinned **✻ Boss** workspace with the board open. Rerunning it is safe.
+
+Restart running Claude sessions so they pick up the hook. Keep the clone where it is: the board and the hook run from it, so `git pull` updates both.
 
 ## Use
 
-In the workspace you want as your board:
+Open the **✻ Boss** workspace. Edits to `sidebar/bossview.js` hot-reload. Hook errors go to `~/.bossview/hook.log`.
 
-```sh
-cmux sidebar open bossview
-```
-
-Edits to `sidebar/bossview.js` hot-reload. Hook errors go to `~/.bossview/hook.log`.
-
-If `claude` isn't at `/opt/homebrew/bin/claude`, set `BOSSVIEW_CLAUDE` to its path.
+The hook runs the `claude` on your PATH; set `BOSSVIEW_CLAUDE` to use another one.
 
 ## Uninstall
 
@@ -50,4 +46,4 @@ If `claude` isn't at `/opt/homebrew/bin/claude`, set `BOSSVIEW_CLAUDE` to its pa
 rm ~/.config/cmux/sidebars/bossview.js
 ```
 
-Then remove the `boss-hook.mjs` entries from `~/.claude/settings.json`.
+Then remove the `boss-hook.mjs` entries from `~/.claude/settings.json`, and unpin and close the **✻ Boss** workspace.
