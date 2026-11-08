@@ -151,6 +151,7 @@ const cardRule = () => Rectangle().fill(TOKEN.border).frame({ height: 1, maxWidt
 function askBlock(s, lane) {
   return Text(() => s().ask)
     .font(FONT.xs).color("primary")
+    .fixedSize("vertical")
     .frame({ maxWidth: "infinity", alignment: "leading" })
     .padding(8)
     .background(lane.color + "14")
