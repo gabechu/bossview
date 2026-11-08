@@ -224,9 +224,58 @@ function handleHook(input) {
   }).unref();
 }
 
+function liveSurfaceIds() {
+  const tree = JSON.parse(execFileSync(CMUX, ["tree", "--all", "--json", "--id-format", "uuids"], { encoding: "utf8" }));
+  const ids = new Set();
+  for (const window of tree.windows ?? []) {
+    for (const ws of window.workspaces ?? []) {
+      for (const pane of ws.panes ?? []) {
+        for (const surface of pane.surfaces ?? []) ids.add(surface.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function idleSessions() {
+  const live = liveSurfaceIds();
+  const listing = execFileSync(CMUX, ["sessions", "list", "--agent", "claude", "--all", "--json"], { encoding: "utf8" });
+  const newestBySurface = new Map();
+  for (const record of JSON.parse(listing).sessions ?? []) {
+    if (!live.has(record.surface_id)) continue;
+    const newest = newestBySurface.get(record.surface_id);
+    if (!newest || record.updated_at_unix > newest.updated_at_unix) newestBySurface.set(record.surface_id, record);
+  }
+  return [...newestBySurface.values()].filter(
+    (record) => record.stored_pid_exists && record.transcript_path && record.agent_lifecycle === "idle",
+  );
+}
+
+function backfill() {
+  for (const session of idleSessions()) {
+    const workspaceId = session.workspace_id;
+    const panelId = session.surface_id;
+    if (hasAsk(workspaceId, panelId)) continue;
+
+    try {
+      runJob({
+        workspaceId, panelId,
+        gen: bumpGeneration(panelId),
+        transcriptPath: session.transcript_path,
+        notice: "",
+        reply: "",
+      });
+    } catch (err) {
+      log(err.stack ?? String(err));
+    }
+  }
+}
+
 try {
   if (process.argv.includes("--job")) {
     runJob(JSON.parse(process.env.BOSSVIEW_JOB));
+  } else if (process.argv.includes("--backfill")) {
+    backfill();
   } else if (!process.env.BOSSVIEW_SUMMARIZER) {
     handleHook(JSON.parse(readFileSync(0, "utf8") || "{}"));
   }

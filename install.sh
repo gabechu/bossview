@@ -81,8 +81,14 @@ open_board() {
   echo "Created pinned board workspace '$board'"
 }
 
+triage_open_sessions() {
+  nohup node "$hook" --backfill >/dev/null 2>&1 &
+  echo "Triaging open Claude sessions in the background"
+}
+
 check_requirements
 link_sidebar
 install_hook
 open_board
+triage_open_sessions
 echo "Restart running Claude sessions so they pick up the hook."
