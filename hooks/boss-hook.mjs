@@ -27,7 +27,7 @@ const CONTEXT_CHARS = 3000;
 const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
 // cmux trims a trailing \u200b, so every hidden run ends with a word joiner.
 const TAG_END = "\u2060";
-const TRIAGE = ["blocked", "approve", "decide", "review", "done"];
+const TRIAGE = ["blocked", "approve", "decide", "review", "done", "working"];
 
 const SYSTEM_PROMPT = `You triage one AI coding session for a busy boss.
 You get the boss's last request, the agent's latest message, and sometimes a pending prompt.
@@ -39,15 +39,17 @@ triage, by how much the session needs the boss:
 - "decide": the agent asked a question or needs the boss to choose.
 - "review": the agent changed code or files, or produced work the boss should check before it counts.
 - "done": the boss got what they came for (a question answered, an explanation, a task already verified) and nothing is pending, so the session can be closed.
+- "working": the agent ended its turn but is still waiting on its own background work (subagents, background commands) and will continue by itself.
 
-ask: at most 8 words, no trailing period. For "done", say what was settled. Otherwise say what the boss should do next, in imperative mood.
+ask: at most 8 words, no trailing period. For "done", say what was settled. For "working", say what it is waiting on. Otherwise say what the boss should do next, in imperative mood.
 
 Examples:
 {"triage": "decide", "ask": "Pick auth library: Clerk or Auth0"}
 {"triage": "approve", "ask": "Approve running database migration"}
 {"triage": "blocked", "ask": "Add STRIPE_KEY to .env"}
 {"triage": "review", "ask": "Check the login bug fix"}
-{"triage": "done", "ask": "Answered how cache invalidation works"}`;
+{"triage": "done", "ask": "Answered how cache invalidation works"}
+{"triage": "working", "ask": "Waiting on staff engineer review"}`;
 
 function log(message) {
   mkdirSync(STATE_DIR, { recursive: true });

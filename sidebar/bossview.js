@@ -37,7 +37,7 @@ const NEEDS = LANES[0];
 // Hidden run after each ask: 16 chars of panel id, 2 of triage, then a word joiner.
 const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
 const HIDDEN_RUN = /^(.+?)([\u200b\u200c\u200d\u2060]{16,})$/;
-const TRIAGE = ["blocked", "approve", "decide", "review", "done"];
+const TRIAGE = ["blocked", "approve", "decide", "review", "done", "working"];
 
 const TRIAGE_META = {
   blocked: { lane: "needs", label: "Blocked", icon: "exclamationmark.octagon" },
