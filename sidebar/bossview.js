@@ -37,7 +37,7 @@ const NEEDS = LANES[0];
 // Hidden run after each ask: 16 chars of panel id, 2 of triage, then a word joiner.
 const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
 const HIDDEN_RUN = /^(.+?)([\u200b\u200c\u200d\u2060]{16,})$/;
-const TRIAGE = ["blocked", "approve", "decide", "review", "done"];
+const TRIAGE = ["blocked", "approve", "decide", "review", "done", "working"];
 
 const TRIAGE_META = {
   blocked: { lane: "needs", label: "Blocked", icon: "exclamationmark.octagon" },
@@ -151,6 +151,7 @@ const cardRule = () => Rectangle().fill(TOKEN.border).frame({ height: 1, maxWidt
 function askBlock(s, lane) {
   return Text(() => s().ask)
     .font(FONT.xs).color("primary")
+    .fixedSize("vertical")
     .frame({ maxWidth: "infinity", alignment: "leading" })
     .padding(8)
     .background(lane.color + "14")
