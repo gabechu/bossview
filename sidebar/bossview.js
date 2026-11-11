@@ -9,6 +9,10 @@ const TOKEN = {
   borderStrong: "#ffffff0a",
   hover: "#ffffff0a",
   claude: "#D97757",
+  textMuted: "#ffffff99",
+  textFaint: "#ffffff66",
+  branch: "#a78bfa",
+  gitPending: "#fbbf24",
 };
 
 const KAWAII = {
@@ -19,20 +23,13 @@ const KAWAII = {
   blocks: ["#FF8FA3", "#8FD3F5", "#9BE3B5"],
 };
 
-const FONT = { "2xs": 10.5, xs: 12, smMd: 11.5, title: 15 };
+const FONT = { "3xs": 10, "2xs": 10.5, xs: 12, smMd: 11.5, title: 15 };
 const RADIUS_LG = 10;
 const ICON_2XS = 12;
 const HEADER_HEIGHT = 48;
 
-// Columns run from most to least of your attention; finished sessions sit last, ready to close.
-const LANES = [
-  { id: "needs", label: "Needs you", color: "#f06445" },
-  { id: "review", label: "Review", color: "#e58bb5" },
-  { id: "working", label: "Working", color: "#60a5fa" },
-  { id: "close", label: "Safe to close", color: "#4ade80" },
-];
-const NEEDS = LANES[0];
-const CLOSE = LANES[3];
+const YOUR_MOVE_COLOR = "#f06445";
+const COMPLETE_COLOR = "#4ade80";
 
 // Hidden run after each ask: 16 chars of panel id, 2 of triage, 4 per byte of
 // git facts as JSON, then a word joiner.
@@ -40,17 +37,6 @@ const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
 const HIDDEN_RUN = /^(.+?)([\u200b\u200c\u200d\u2060]{16,})$/;
 const TRIAGE = ["blocked", "approve", "decide", "review", "done", "working"];
 const STALE_WORKING_SECONDS = 10 * 60;
-
-const TRIAGE_META = {
-  blocked: { lane: "needs", label: "Blocked", icon: "exclamationmark.octagon" },
-  approve: { lane: "needs", label: "Approve", icon: "lock.shield" },
-  decide: { lane: "needs", label: "Decide", icon: "questionmark.bubble" },
-  waiting: { lane: "needs", label: "Waiting", icon: "ellipsis.bubble" },
-  review: { lane: "review", label: "Review", icon: "eye" },
-  untriaged: { lane: "review", label: "Not triaged", icon: "circle.dashed" },
-  working: { lane: "working", label: "Working", icon: "arrow.triangle.2.circlepath" },
-  done: { lane: "close", label: "Done", icon: "checkmark.circle" },
-};
 
 const epoch = () => data.clock()?.epoch ?? 0;
 
@@ -105,11 +91,16 @@ function verdictFor(ws, agent) {
 // A verdict is cleared whenever you send a prompt, so one only exists once that prompt
 // has finished; it wins over cmux's "working", which sticks after an interrupted turn.
 // A prompt cancelled before any reply fires no hook at all, so a "working" session
-// with no tool activity for a while is treated as untriaged.
+// with no tool activity for a while is treated as untriaged. A "working" verdict
+// expires the same way.
 function triageOf(status, verdict, since) {
-  if (verdict) return verdict.triage;
   const quietSeconds = epoch() - since;
-  if (status === "working" && quietSeconds < STALE_WORKING_SECONDS) return "working";
+  const stale = quietSeconds >= STALE_WORKING_SECONDS;
+  if (verdict?.triage === "working" && stale) return "waiting";
+
+  if (verdict) return verdict.triage;
+
+  if (status === "working" && !stale) return "working";
   return status === "needs_input" ? "waiting" : "untriaged";
 }
 
@@ -126,14 +117,14 @@ function plural(count, word) {
 
 function leftInCheckout(facts) {
   const left = [];
-  if (facts.dirty) left.push("Commit changes on " + facts.branch);
+  if (facts.dirty) left.push("uncommitted changes");
 
-  if (facts.unpushed) left.push("Push " + plural(facts.unpushed, "commit") + " on " + facts.branch);
+  if (facts.unpushed) left.push(plural(facts.unpushed, "unpushed commit"));
 
   const merged = facts.mr?.state === "MERGED";
   if (facts.ahead && !merged) {
-    const mrOpen = facts.mr?.state === "OPEN";
-    left.push(mrOpen ? "Merge " + facts.mr.label : "Open an MR for " + facts.branch);
+    const mrStatus = facts.mr ? facts.mr.label + " " + String(facts.mr.state).toLowerCase() : "no MR";
+    left.push(mrStatus);
   }
   return left;
 }
@@ -149,22 +140,19 @@ function toSession(ws, a) {
   const facts = verdict?.facts ?? null;
   const gitLeft = facts ? leftInCheckout(facts) : [];
   const complete = triage === "done" && gitLeft.length === 0;
-  const doneButUnmerged = triage === "done" && gitLeft.length > 0;
   if (facts) repoBySession.set(key, facts.repo);
 
-  const meta = TRIAGE_META[triage];
   return {
     key,
     ws, a, triage,
     surfaceId: tab?.surfaceId ?? a.surfaceId,
-    lane: meta.lane,
-    icon: meta.icon,
-    label: meta.label,
+    working: triage === "working",
     name: clean(tab?.title) || clean(a.title) || ws.title,
     branch: tab?.branch || ws.branch || "",
     repo: repoBySession.get(key) || folderName(a.directory ?? ws.directory) || ws.title,
     complete,
-    ask: doneButUnmerged ? gitLeft.join(" · ") : askText(triage, verdict, tab),
+    ask: askText(triage, verdict, tab),
+    gitLeft,
     since,
   };
 }
@@ -182,17 +170,16 @@ const sessions = computed(() => {
   return out;
 });
 
-const inLane = (lane) => () => sessions().filter((s) => s.lane === lane);
+const isYourMove = (s) => !s.complete && !s.working;
 
-const laneOf = (id) => LANES.find((lane) => lane.id === id);
+const yourMove = () => sessions().filter(isYourMove);
 
 function toProject(repo, list) {
-  const open = list.filter((s) => !s.complete);
+  const stopped = list.filter(isYourMove);
+  const working = list.filter((s) => s.working);
   const done = list.filter((s) => s.complete);
-  return { repo, open, done };
+  return { repo, yourMove: [...stopped, ...working], done };
 }
-
-let repoOrder = [];
 
 const projects = computed(() => {
   const sessionsByRepo = new Map();
@@ -201,12 +188,8 @@ const projects = computed(() => {
     sessionsByRepo.get(s.repo).push(s);
   }
 
-  repoOrder = repoOrder.filter((repo) => sessionsByRepo.has(repo));
-  for (const repo of sessionsByRepo.keys()) {
-    if (!repoOrder.includes(repo)) repoOrder.push(repo);
-  }
-
-  return repoOrder.map((repo) => toProject(repo, sessionsByRepo.get(repo)));
+  const repos = [...sessionsByRepo.keys()].sort((x, y) => x.localeCompare(y));
+  return repos.map((repo) => toProject(repo, sessionsByRepo.get(repo)));
 });
 
 function jump(s) {
@@ -216,52 +199,46 @@ function jump(s) {
 
 const hRule = () => Rectangle().fill(TOKEN.borderStrong).frame({ height: 1, maxWidth: "infinity" });
 const vRule = () => Rectangle().fill(TOKEN.borderStrong).frame({ width: 1, maxHeight: "infinity" });
-const cardRule = () => Rectangle().fill(TOKEN.border).frame({ height: 1, maxWidth: "infinity" });
 
-// The ask is the point of the card, so it gets the full width and never truncates.
-function askBlock(s, lane) {
+// The ask is the point of the card, so it is the largest text and never truncates.
+function askLine(s) {
   return Text(() => s().ask)
-    .font(FONT.xs).color("primary")
+    .font(FONT.title).weight("semibold").color("primary")
     .fixedSize("vertical")
-    .frame({ maxWidth: "infinity", alignment: "leading" })
-    .padding(8)
-    .background(lane.color + "14")
-    .cornerRadius(6);
+    .frame({ maxWidth: "infinity", alignment: "leading" });
 }
 
-function card(s, lane) {
-  const attention = lane.id === NEEDS.id;
-  return VStack({ alignment: "leading", spacing: 0 }, [
-    VStack({ alignment: "leading", spacing: 6 }, [
-      HStack({ spacing: 10 }, [
-        Image("sparkle").font(14).color(TOKEN.claude),
-        Text(() => s().name)
-          .font(FONT.smMd).weight("semibold").color("primary")
-          .lineLimit(2).truncation("tail"),
-        Spacer({ minLength: 0 }),
-      ]),
-      HStack({ spacing: 6 }, [
-        Image("arrow.triangle.branch").font(ICON_2XS - 2).color("secondary"),
-        Text(() => s().branch)
-          .font(FONT["2xs"]).color("secondary")
-          .lineLimit(1).truncation("middle"),
-        Spacer({ minLength: 0 }),
-      ]),
-      askBlock(s, lane),
-    ]).paddingHorizontal(14).paddingVertical(10),
-    cardRule(),
-    HStack({ spacing: 6 }, [
-      Image(() => s().icon).font(ICON_2XS - 1).color(lane.color),
-      Text(() => s().label).font(FONT["2xs"]).weight("medium").color(lane.color).fixedSize(),
+function card(s) {
+  return VStack({ alignment: "leading", spacing: 8 }, [
+    HStack({ spacing: 8 }, [
+      Image(() => (s().working ? "arrow.triangle.2.circlepath" : "sparkle")).font(ICON_2XS).color(TOKEN.claude),
+      Text(() => s().name)
+        .font(FONT.xs).color(TOKEN.textMuted)
+        .lineLimit(1).truncation("tail"),
       Spacer({ minLength: 0 }),
-      Text(() => ago(s().since)).font(FONT["2xs"]).monospaced().color("secondary").fixedSize(),
-    ]).paddingHorizontal(14).paddingVertical(10),
+      Text(() => ago(s().since)).font(FONT["3xs"]).monospaced().color(TOKEN.textFaint).fixedSize(),
+    ]),
+    askLine(s),
+    HStack({ spacing: 6 }, [
+      Image("arrow.triangle.branch").font(ICON_2XS - 2).color(TOKEN.branch),
+      Text(() => s().branch)
+        .font(FONT["2xs"]).monospaced().color(TOKEN.branch)
+        .lineLimit(1).truncation("middle"),
+      Spacer({ minLength: 0 }),
+    ]),
+    ForEach({ items: () => (s().gitLeft.length ? [s().gitLeft.join(" · ")] : []), key: () => "git" }, (status) =>
+      Text(() => status())
+        .font(FONT["2xs"]).color(TOKEN.gitPending)
+        .fixedSize("vertical")
+        .frame({ maxWidth: "infinity", alignment: "leading" })),
   ])
-    .background(attention ? lane.color + "14" : TOKEN.surface)
+    .paddingHorizontal(14).paddingVertical(12)
+    .background(TOKEN.surface)
     .cornerRadius(RADIUS_LG)
-    .borderColor(attention ? lane.color : TOKEN.border)
+    .borderColor(TOKEN.border)
     .borderWidth(1)
     .hoverBackground(TOKEN.hover)
+    .opacity(() => (s().working ? 0.5 : 1))
     .frame({ maxWidth: "infinity" })
     .cursor("pointer")
     .onTap(() => jump(s()));
@@ -284,7 +261,7 @@ function section(label, color, items) {
       Spacer(),
       Text(() => String(items().length)).font(FONT["2xs"]).monospaced().color("tertiary"),
     ]),
-    ForEach({ items, key: (s) => s.key + ":" + s.lane }, (s) => card(s, laneOf(s().lane))),
+    ForEach({ items, key: (s) => s.key }, card),
   ]).padding(12);
 }
 
@@ -293,9 +270,9 @@ function project(p) {
     VStack({ alignment: "leading", spacing: 0 }, [
       projectHeader(p),
       hRule(),
-      section("Not complete", "secondary", () => p().open),
+      section("Your move", YOUR_MOVE_COLOR, () => p().yourMove),
       hRule(),
-      section("Complete", CLOSE.color, () => p().done),
+      section("Complete", COMPLETE_COLOR, () => p().done),
       Spacer(),
     ]).frame({ maxWidth: "infinity", maxHeight: "infinity" }),
     vRule(),
@@ -330,14 +307,14 @@ function avatar(needs) {
 }
 
 function topBar() {
-  const needs = inLane(NEEDS.id);
+  const needs = yourMove;
   return HStack({ spacing: 10 }, [
     avatar(needs),
     Text("Board").font(FONT.title).weight("semibold").color("primary"),
     Spacer(),
     Text(() => (needs().length ? `${needs().length} need${needs().length === 1 ? "s" : ""} you` : "All clear"))
       .font(FONT.xs).weight("medium")
-      .color(() => (needs().length ? NEEDS.color : "tertiary")),
+      .color(() => (needs().length ? YOUR_MOVE_COLOR : "tertiary")),
   ]).paddingHorizontal(16).frame({ height: HEADER_HEIGHT, maxWidth: "infinity" });
 }
 
