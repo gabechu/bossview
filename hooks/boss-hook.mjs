@@ -2,7 +2,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { accessSync, appendFileSync, closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 // cmux puts a claude shim first on PATH that wraps every call like a user session;
 // the triage call has to reach the real binary.
@@ -22,8 +22,8 @@ const CMUX = process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
 const STATE_DIR = join(homedir(), ".bossview");
 const TRANSCRIPT_TAIL_BYTES = 400_000;
 const CONTEXT_CHARS = 3000;
-// Each ask line ends with its panel id and triage hidden in zero-width characters,
-// so cmux's own sidebar shows only the ask while bossview can still read both.
+// Each ask line ends with its panel id, triage and git facts hidden in zero-width
+// characters, so cmux's own sidebar shows only the ask while bossview can still read them.
 const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
 // cmux trims a trailing \u200b, so every hidden run ends with a word joiner.
 const TAG_END = "\u2060";
@@ -126,6 +126,70 @@ function triageSession({ request, reply }, notice) {
   return parseTriage(out, notice);
 }
 
+function git(cwd, args) {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+}
+
+function defaultBranch(cwd) {
+  try {
+    return git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  } catch {
+    return "";
+  }
+}
+
+const GITLAB_STATE = { opened: "OPEN", merged: "MERGED", closed: "CLOSED" };
+
+function run(cwd, command, args) {
+  return execFileSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+}
+
+function toMergeRequest(mr) {
+  return { label: "MR !" + mr.iid, state: GITLAB_STATE[mr.state] };
+}
+
+function linkedMergeRequest(cwd, transcriptPath) {
+  const links = readFileSync(transcriptPath, "utf8").split("\n").filter((line) => line.includes('"type":"pr-link"'));
+  if (!links.length) return null;
+
+  const link = JSON.parse(links.at(-1));
+  const repo = new URL(link.prUrl).host + "/" + link.prRepository;
+  const out = run(cwd, "glab", ["mr", "view", String(link.prNumber), "-R", repo, "--output", "json"]);
+  return toMergeRequest(JSON.parse(out));
+}
+
+function branchMergeRequest(cwd, branch) {
+  const out = run(cwd, "glab", ["mr", "list", "--source-branch", branch, "--all", "--per-page", "1", "--output", "json"]);
+  const mr = JSON.parse(out)[0];
+  if (!mr) return null;
+
+  return toMergeRequest(mr);
+}
+
+function mergeRequest(cwd, branch, transcriptPath) {
+  try {
+    return linkedMergeRequest(cwd, transcriptPath) ?? branchMergeRequest(cwd, branch);
+  } catch {
+    return null;
+  }
+}
+
+function gitFacts(cwd, transcriptPath) {
+  const commonDir = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const base = defaultBranch(cwd);
+  const onBase = !base || base.endsWith("/" + branch);
+  const ahead = onBase ? 0 : Number(git(cwd, ["rev-list", "--count", "HEAD", "--not", base]));
+  return {
+    repo: basename(dirname(commonDir)),
+    branch,
+    dirty: git(cwd, ["status", "--porcelain"]) !== "",
+    unpushed: Number(git(cwd, ["rev-list", "--count", "HEAD", "--not", "--remotes"])),
+    ahead,
+    mr: ahead > 0 ? mergeRequest(cwd, branch, transcriptPath) : null,
+  };
+}
+
 function workspaceDescription(workspaceId) {
   const tree = JSON.parse(execFileSync(CMUX, ["tree", "--all", "--json"], { encoding: "utf8" }));
   for (const window of tree.windows ?? []) {
@@ -138,6 +202,10 @@ function hide(n) {
   return ZERO_WIDTH[n >> 2] + ZERO_WIDTH[n & 3];
 }
 
+function hideText(text) {
+  return [...Buffer.from(text, "utf8")].map((byte) => hide(byte >> 4) + hide(byte & 15)).join("");
+}
+
 function hiddenTag(panelId) {
   return [...panelId.slice(0, 8).toUpperCase()].map((c) => hide(parseInt(c, 16))).join("");
 }
@@ -147,10 +215,13 @@ function belongsTo(line, tag) {
   return hidden.startsWith(tag) || /^\[[0-9A-F]{8}\] /.test(line);
 }
 
-function setAsk(workspaceId, panelId, result) {
+function setAsk(workspaceId, panelId, result, facts) {
   const tag = hiddenTag(panelId);
   const lines = workspaceDescription(workspaceId).split("\n").filter((l) => l && !belongsTo(l, tag));
-  if (result) lines.push(result.ask + tag + hide(TRIAGE.indexOf(result.triage)) + TAG_END);
+  if (result) {
+    const hiddenFacts = facts ? hideText(JSON.stringify(facts)) : "";
+    lines.push(result.ask + tag + hide(TRIAGE.indexOf(result.triage)) + hiddenFacts + TAG_END);
+  }
   const args = lines.length
     ? ["workspace-action", "--action", "set-description", "--workspace", workspaceId, "--description", lines.join("\n")]
     : ["workspace-action", "--action", "clear-description", "--workspace", workspaceId];
@@ -182,7 +253,11 @@ function runJob(job) {
   const exchange = lastExchange(job.transcriptPath);
   if (job.reply) exchange.reply = job.reply.slice(-CONTEXT_CHARS);
   const result = triageSession(exchange, job.notice);
-  if (isCurrent(job.panelId, job.gen)) setAsk(job.workspaceId, job.panelId, result);
+  let facts = null;
+  try {
+    facts = gitFacts(job.cwd, job.transcriptPath);
+  } catch {}
+  if (isCurrent(job.panelId, job.gen)) setAsk(job.workspaceId, job.panelId, result, facts);
 }
 
 function hasAsk(workspaceId, panelId) {
@@ -216,6 +291,7 @@ function handleHook(input) {
     workspaceId, panelId,
     gen: bumpGeneration(panelId),
     transcriptPath: input.transcript_path,
+    cwd: input.cwd,
     notice: input.notification_type === "permission_prompt" ? input.message : "",
     reply: input.last_assistant_message ?? "",
   };
@@ -264,6 +340,7 @@ function backfill() {
         workspaceId, panelId,
         gen: bumpGeneration(panelId),
         transcriptPath: session.transcript_path,
+        cwd: session.cwd,
         notice: "",
         reply: "",
       });

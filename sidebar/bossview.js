@@ -21,7 +21,6 @@ const KAWAII = {
 
 const FONT = { "2xs": 10.5, xs: 12, smMd: 11.5, title: 15 };
 const RADIUS_LG = 10;
-const SWATCH = 8;
 const ICON_2XS = 12;
 const HEADER_HEIGHT = 48;
 
@@ -33,8 +32,10 @@ const LANES = [
   { id: "close", label: "Safe to close", color: "#4ade80" },
 ];
 const NEEDS = LANES[0];
+const CLOSE = LANES[3];
 
-// Hidden run after each ask: 16 chars of panel id, 2 of triage, then a word joiner.
+// Hidden run after each ask: 16 chars of panel id, 2 of triage, 4 per byte of
+// git facts as JSON, then a word joiner.
 const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
 const HIDDEN_RUN = /^(.+?)([\u200b\u200c\u200d\u2060]{16,})$/;
 const TRIAGE = ["blocked", "approve", "decide", "review", "done", "working"];
@@ -79,13 +80,24 @@ function decodeHex(hidden) {
   return out.toUpperCase();
 }
 
+function decodeFacts(hidden) {
+  const hex = decodeHex(hidden);
+  if (!hex) return null;
+
+  try {
+    return JSON.parse(decodeURIComponent(hex.replace(/../g, "%$&")));
+  } catch {
+    return null;
+  }
+}
+
 function verdictFor(ws, agent) {
   const tags = [agent.panelId, agent.surfaceId].filter(Boolean).map((id) => id.slice(0, 8).toUpperCase());
   for (const line of (ws.description ?? "").split("\n")) {
     const m = HIDDEN_RUN.exec(line);
     if (!m || !tags.includes(decodeHex(m[2].slice(0, 16)))) continue;
     const triage = TRIAGE[parseInt(decodeHex(m[2].slice(16, 18)) || "2", 16)] ?? "decide";
-    return { triage, ask: m[1] };
+    return { triage, ask: m[1], facts: decodeFacts(m[2].slice(18)) };
   }
   return null;
 }
@@ -108,22 +120,51 @@ function askText(triage, verdict, tab) {
   return "Not triaged yet";
 }
 
+function plural(count, word) {
+  return count + " " + word + (count === 1 ? "" : "s");
+}
+
+function leftInCheckout(facts) {
+  const left = [];
+  if (facts.dirty) left.push("Commit changes on " + facts.branch);
+
+  if (facts.unpushed) left.push("Push " + plural(facts.unpushed, "commit") + " on " + facts.branch);
+
+  const merged = facts.mr?.state === "MERGED";
+  if (facts.ahead && !merged) {
+    const mrOpen = facts.mr?.state === "OPEN";
+    left.push(mrOpen ? "Merge " + facts.mr.label : "Open an MR for " + facts.branch);
+  }
+  return left;
+}
+
+const repoBySession = new Map();
+
 function toSession(ws, a) {
+  const key = ws.id + ":" + a.id;
   const tab = (ws.tabs ?? []).find((t) => t.id === a.panelId);
   const verdict = verdictFor(ws, a);
   const since = a.lastActivityAt ?? a.sinceEpoch ?? 0;
   const triage = triageOf(a.status, verdict, since);
+  const facts = verdict?.facts ?? null;
+  const gitLeft = facts ? leftInCheckout(facts) : [];
+  const complete = triage === "done" && gitLeft.length === 0;
+  const doneButUnmerged = triage === "done" && gitLeft.length > 0;
+  if (facts) repoBySession.set(key, facts.repo);
+
   const meta = TRIAGE_META[triage];
   return {
-    key: ws.id + ":" + a.id,
+    key,
     ws, a, triage,
     surfaceId: tab?.surfaceId ?? a.surfaceId,
     lane: meta.lane,
     icon: meta.icon,
     label: meta.label,
     name: clean(tab?.title) || clean(a.title) || ws.title,
-    location: [folderName(a.directory ?? ws.directory) || ws.title, ws.branch].filter(Boolean).join(" / "),
-    ask: askText(triage, verdict, tab),
+    branch: tab?.branch || ws.branch || "",
+    repo: repoBySession.get(key) || folderName(a.directory ?? ws.directory) || ws.title,
+    complete,
+    ask: doneButUnmerged ? gitLeft.join(" · ") : askText(triage, verdict, tab),
     since,
   };
 }
@@ -142,6 +183,31 @@ const sessions = computed(() => {
 });
 
 const inLane = (lane) => () => sessions().filter((s) => s.lane === lane);
+
+const laneOf = (id) => LANES.find((lane) => lane.id === id);
+
+function toProject(repo, list) {
+  const open = list.filter((s) => !s.complete);
+  const done = list.filter((s) => s.complete);
+  return { repo, open, done };
+}
+
+let repoOrder = [];
+
+const projects = computed(() => {
+  const sessionsByRepo = new Map();
+  for (const s of sessions()) {
+    if (!sessionsByRepo.has(s.repo)) sessionsByRepo.set(s.repo, []);
+    sessionsByRepo.get(s.repo).push(s);
+  }
+
+  repoOrder = repoOrder.filter((repo) => sessionsByRepo.has(repo));
+  for (const repo of sessionsByRepo.keys()) {
+    if (!repoOrder.includes(repo)) repoOrder.push(repo);
+  }
+
+  return repoOrder.map((repo) => toProject(repo, sessionsByRepo.get(repo)));
+});
 
 function jump(s) {
   cmux("workspace.select", { workspace_id: s.ws.id });
@@ -176,7 +242,7 @@ function card(s, lane) {
       ]),
       HStack({ spacing: 6 }, [
         Image("arrow.triangle.branch").font(ICON_2XS - 2).color("secondary"),
-        Text(() => s().location)
+        Text(() => s().branch)
           .font(FONT["2xs"]).color("secondary")
           .lineLimit(1).truncation("middle"),
         Spacer({ minLength: 0 }),
@@ -201,25 +267,39 @@ function card(s, lane) {
     .onTap(() => jump(s()));
 }
 
-function columnHeader(lane, items) {
-  return HStack({ spacing: 10 }, [
-    Circle({ size: SWATCH }).fill(lane.color),
-    Text(lane.label).font(FONT.xs).weight("medium").color(lane.color),
-    Spacer(),
-    Text(() => String(items().length)).font(FONT.xs).monospaced().color("tertiary"),
+function projectHeader(p) {
+  return HStack({ spacing: 8 }, [
+    Image("folder").font(ICON_2XS).color("secondary"),
+    Text(() => p().repo)
+      .font(FONT.xs).weight("semibold").color("primary")
+      .lineLimit(1).truncation("middle"),
+    Spacer({ minLength: 0 }),
   ]).paddingHorizontal(16).frame({ height: HEADER_HEIGHT, maxWidth: "infinity" });
 }
 
-function column(lane) {
-  const items = inLane(lane.id);
-  return VStack({ alignment: "leading", spacing: 0 }, [
-    columnHeader(lane, items),
-    hRule(),
-    VStack({ alignment: "leading", spacing: 10 }, [
-      ForEach({ items, key: (s) => s.key }, (s) => card(s, lane)),
-    ]).padding(12),
-    Spacer(),
-  ]).frame({ maxWidth: "infinity", maxHeight: "infinity" });
+function section(label, color, items) {
+  return VStack({ alignment: "leading", spacing: 10 }, [
+    HStack({ spacing: 8 }, [
+      Text(label).font(FONT["2xs"]).weight("medium").color(color),
+      Spacer(),
+      Text(() => String(items().length)).font(FONT["2xs"]).monospaced().color("tertiary"),
+    ]),
+    ForEach({ items, key: (s) => s.key + ":" + s.lane }, (s) => card(s, laneOf(s().lane))),
+  ]).padding(12);
+}
+
+function project(p) {
+  return HStack({ alignment: "top", spacing: 0 }, [
+    VStack({ alignment: "leading", spacing: 0 }, [
+      projectHeader(p),
+      hRule(),
+      section("Not complete", "secondary", () => p().open),
+      hRule(),
+      section("Complete", CLOSE.color, () => p().done),
+      Spacer(),
+    ]).frame({ maxWidth: "infinity", maxHeight: "infinity" }),
+    vRule(),
+  ]);
 }
 
 // cmux sidebars can't load image files, so this redraws assets/mascot.svg from shapes.
@@ -265,6 +345,8 @@ sidebar(() =>
   VStack({ alignment: "leading", spacing: 0 }, [
     topBar(),
     hRule(),
-    HStack({ alignment: "top", spacing: 0 }, LANES.flatMap((lane, i) => (i ? [vRule(), column(lane)] : [column(lane)]))),
+    HStack({ alignment: "top", spacing: 0 }, [
+      ForEach({ items: projects, key: (p) => p.repo }, project),
+    ]),
   ]).frame({ maxWidth: "infinity", maxHeight: "infinity" })
 )
