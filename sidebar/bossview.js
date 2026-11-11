@@ -38,6 +38,7 @@ const NEEDS = LANES[0];
 const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
 const HIDDEN_RUN = /^(.+?)([\u200b\u200c\u200d\u2060]{16,})$/;
 const TRIAGE = ["blocked", "approve", "decide", "review", "done", "working"];
+const STALE_WORKING_SECONDS = 10 * 60;
 
 const TRIAGE_META = {
   blocked: { lane: "needs", label: "Blocked", icon: "exclamationmark.octagon" },
@@ -91,9 +92,12 @@ function verdictFor(ws, agent) {
 
 // A verdict is cleared whenever you send a prompt, so one only exists once that prompt
 // has finished; it wins over cmux's "working", which sticks after an interrupted turn.
-function triageOf(status, verdict) {
+// A prompt cancelled before any reply fires no hook at all, so a "working" session
+// with no tool activity for a while is treated as untriaged.
+function triageOf(status, verdict, since) {
   if (verdict) return verdict.triage;
-  if (status === "working") return "working";
+  const quietSeconds = epoch() - since;
+  if (status === "working" && quietSeconds < STALE_WORKING_SECONDS) return "working";
   return status === "needs_input" ? "waiting" : "untriaged";
 }
 
@@ -107,7 +111,8 @@ function askText(triage, verdict, tab) {
 function toSession(ws, a) {
   const tab = (ws.tabs ?? []).find((t) => t.id === a.panelId);
   const verdict = verdictFor(ws, a);
-  const triage = triageOf(a.status, verdict);
+  const since = a.lastActivityAt ?? a.sinceEpoch ?? 0;
+  const triage = triageOf(a.status, verdict, since);
   const meta = TRIAGE_META[triage];
   return {
     key: ws.id + ":" + a.id,
@@ -119,7 +124,7 @@ function toSession(ws, a) {
     name: clean(tab?.title) || clean(a.title) || ws.title,
     location: [folderName(a.directory ?? ws.directory) || ws.title, ws.branch].filter(Boolean).join(" / "),
     ask: askText(triage, verdict, tab),
-    since: a.lastActivityAt ?? a.sinceEpoch ?? 0,
+    since,
   };
 }
 
