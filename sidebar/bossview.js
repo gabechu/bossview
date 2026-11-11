@@ -88,11 +88,10 @@ function verdictFor(ws, agent) {
   return null;
 }
 
-// A verdict is cleared whenever you send a prompt, so one only exists once that prompt
-// has finished; it wins over cmux's "working", which sticks after an interrupted turn.
-// A prompt cancelled before any reply fires no hook at all, so a "working" session
-// with no tool activity for a while is treated as untriaged. A "working" verdict
-// expires the same way.
+// Sending a prompt replaces the verdict with a "working" one, so any other verdict
+// means that prompt has finished; it wins over cmux's "working", which sticks after
+// an interrupted turn. A prompt cancelled before any reply fires no hook at all, so
+// a "working" session with no tool activity for a while stops counting as working.
 function triageOf(status, verdict, since) {
   const quietSeconds = epoch() - since;
   const stale = quietSeconds >= STALE_WORKING_SECONDS;
@@ -129,8 +128,6 @@ function leftInCheckout(facts) {
   return left;
 }
 
-const repoBySession = new Map();
-
 function toSession(ws, a) {
   const key = ws.id + ":" + a.id;
   const tab = (ws.tabs ?? []).find((t) => t.id === a.panelId);
@@ -140,7 +137,6 @@ function toSession(ws, a) {
   const facts = verdict?.facts ?? null;
   const gitLeft = facts ? leftInCheckout(facts) : [];
   const complete = triage === "done" && gitLeft.length === 0;
-  if (facts) repoBySession.set(key, facts.repo);
 
   return {
     key,
@@ -149,7 +145,7 @@ function toSession(ws, a) {
     working: triage === "working",
     name: clean(tab?.title) || clean(a.title) || ws.title,
     branch: tab?.branch || ws.branch || "",
-    repo: repoBySession.get(key) || folderName(a.directory ?? ws.directory) || ws.title,
+    repo: facts?.repo || folderName(a.directory ?? ws.directory) || ws.title,
     complete,
     ask: askText(triage, verdict, tab),
     gitLeft,

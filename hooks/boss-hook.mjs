@@ -174,14 +174,26 @@ function mergeRequest(cwd, branch, transcriptPath) {
   }
 }
 
-function gitFacts(cwd, transcriptPath) {
+function repoName(cwd) {
   const commonDir = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  return basename(dirname(commonDir));
+}
+
+function workingFacts(cwd) {
+  try {
+    return { repo: repoName(cwd) };
+  } catch {
+    return null;
+  }
+}
+
+function gitFacts(cwd, transcriptPath) {
   const branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const base = defaultBranch(cwd);
   const onBase = !base || base.endsWith("/" + branch);
   const ahead = onBase ? 0 : Number(git(cwd, ["rev-list", "--count", "HEAD", "--not", base]));
   return {
-    repo: basename(dirname(commonDir)),
+    repo: repoName(cwd),
     branch,
     dirty: git(cwd, ["status", "--porcelain"]) !== "",
     unpushed: Number(git(cwd, ["rev-list", "--count", "HEAD", "--not", "--remotes"])),
@@ -210,9 +222,12 @@ function hiddenTag(panelId) {
   return [...panelId.slice(0, 8).toUpperCase()].map((c) => hide(parseInt(c, 16))).join("");
 }
 
+function hiddenRun(line) {
+  return line.match(/[\u200b\u200c\u200d\u2060]+$/)?.[0] ?? "";
+}
+
 function belongsTo(line, tag) {
-  const hidden = line.match(/[\u200b\u200c\u200d\u2060]+$/)?.[0] ?? "";
-  return hidden.startsWith(tag) || /^\[[0-9A-F]{8}\] /.test(line);
+  return hiddenRun(line).startsWith(tag) || /^\[[0-9A-F]{8}\] /.test(line);
 }
 
 function setAsk(workspaceId, panelId, result, facts) {
@@ -260,9 +275,10 @@ function runJob(job) {
   if (isCurrent(job.panelId, job.gen)) setAsk(job.workspaceId, job.panelId, result, facts);
 }
 
-function hasAsk(workspaceId, panelId) {
+function hasVerdict(workspaceId, panelId) {
   const tag = hiddenTag(panelId);
-  return workspaceDescription(workspaceId).split("\n").some((l) => belongsTo(l, tag));
+  const working = tag + hide(TRIAGE.indexOf("working"));
+  return workspaceDescription(workspaceId).split("\n").some((l) => belongsTo(l, tag) && !hiddenRun(l).startsWith(working));
 }
 
 // An interrupted turn fires no Stop, so the 60-second idle notification is the
@@ -270,7 +286,7 @@ function hasAsk(workspaceId, panelId) {
 function needsTriage(event, input, workspaceId, panelId) {
   if (event === "Stop") return true;
   if (event !== "Notification") return false;
-  if (input.notification_type === "idle_prompt") return !hasAsk(workspaceId, panelId);
+  if (input.notification_type === "idle_prompt") return !hasVerdict(workspaceId, panelId);
   return input.notification_type === "permission_prompt" || input.notification_type === "elicitation_dialog";
 }
 
@@ -280,9 +296,17 @@ function handleHook(input) {
   const event = input.hook_event_name;
   if (!workspaceId || !panelId) return;
 
-  if (event === "UserPromptSubmit" || event === "SessionEnd") {
+  if (event === "SessionEnd") {
     bumpGeneration(panelId);
     setAsk(workspaceId, panelId, null);
+    return;
+  }
+
+  if (event === "UserPromptSubmit") {
+    bumpGeneration(panelId);
+    const firstLine = String(input.prompt ?? "").trim().split("\n")[0];
+    const ask = firstLine.slice(0, 90) || "Working";
+    setAsk(workspaceId, panelId, { triage: "working", ask }, workingFacts(input.cwd));
     return;
   }
   if (!needsTriage(event, input, workspaceId, panelId)) return;
@@ -333,7 +357,7 @@ function backfill() {
   for (const session of idleSessions()) {
     const workspaceId = session.workspace_id;
     const panelId = session.surface_id;
-    if (hasAsk(workspaceId, panelId)) continue;
+    if (hasVerdict(workspaceId, panelId)) continue;
 
     try {
       runJob({
