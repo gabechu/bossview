@@ -63,7 +63,7 @@ function ago(since) {
 
 function clean(text) {
   const line = (text ?? "").split("\n").map((l) => l.trim()).find((l) => l) ?? "";
-  return line.replace(/^[^\p{L}\p{N}]+/u, "");
+  return line.replace(/^[^\p{L}\p{N}\p{Ps}]+/u, "");
 }
 
 function folderName(path) {
