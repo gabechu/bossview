@@ -22,6 +22,8 @@ const CMUX = process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
 const STATE_DIR = join(homedir(), ".bossview");
 const TRANSCRIPT_TAIL_BYTES = 400_000;
 const CONTEXT_CHARS = 3000;
+const CONTEXT_WINDOW = 200_000;
+const LONG_CONTEXT_WINDOW = 1_000_000;
 // Each ask line ends with its panel id, triage and git facts hidden in zero-width
 // characters, so cmux's own sidebar shows only the ask while bossview can still read them.
 const ZERO_WIDTH = ["\u200b", "\u200c", "\u200d", "\u2060"];
@@ -96,6 +98,33 @@ function lastExchange(transcriptPath) {
     }
   }
   return { request: request.slice(0, 500), reply: reply.join("\n").slice(-CONTEXT_CHARS) };
+}
+
+function contextPercent(transcriptPath) {
+  let used = null;
+  let window = CONTEXT_WINDOW;
+  for (const line of readTail(transcriptPath, TRANSCRIPT_TAIL_BYTES).split("\n")) {
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry.isSidechain) continue;
+
+    if (entry.type === "api-request") {
+      const betas = entry.params?.betas ?? [];
+      window = betas.some((beta) => beta.startsWith("context-1m")) ? LONG_CONTEXT_WINDOW : CONTEXT_WINDOW;
+    }
+
+    const usage = entry.type === "assistant" && entry.message?.model !== "<synthetic>" ? entry.message?.usage : null;
+    if (usage) {
+      used = usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens + usage.output_tokens;
+    }
+  }
+  if (used === null) return null;
+
+  return Math.round((used / window) * 100);
 }
 
 function parseTriage(out, notice) {
@@ -179,12 +208,12 @@ function repoName(cwd) {
   return basename(dirname(commonDir));
 }
 
-function workingFacts(cwd) {
+function workingFacts(cwd, transcriptPath) {
+  const facts = { context: contextPercent(transcriptPath) };
   try {
-    return { repo: repoName(cwd) };
-  } catch {
-    return null;
-  }
+    facts.repo = repoName(cwd);
+  } catch {}
+  return facts;
 }
 
 function gitFacts(cwd, transcriptPath) {
@@ -218,8 +247,8 @@ function hideText(text) {
   return [...Buffer.from(text, "utf8")].map((byte) => hide(byte >> 4) + hide(byte & 15)).join("");
 }
 
-function hiddenTag(panelId) {
-  return [...panelId.slice(0, 8).toUpperCase()].map((c) => hide(parseInt(c, 16))).join("");
+function hiddenTag(id) {
+  return [...id.slice(0, 8).toUpperCase()].map((c) => hide(parseInt(c, 16))).join("");
 }
 
 function hiddenRun(line) {
@@ -230,9 +259,10 @@ function belongsTo(line, tag) {
   return hiddenRun(line).startsWith(tag) || /^\[[0-9A-F]{8}\] /.test(line);
 }
 
-function setAsk(workspaceId, panelId, result, facts) {
-  const tag = hiddenTag(panelId);
-  const lines = workspaceDescription(workspaceId).split("\n").filter((l) => l && !belongsTo(l, tag));
+function setAsk(workspaceId, sessionId, panelId, result, facts) {
+  const tag = hiddenTag(sessionId);
+  const panelTag = hiddenTag(panelId);
+  const lines = workspaceDescription(workspaceId).split("\n").filter((l) => l && !belongsTo(l, tag) && !belongsTo(l, panelTag));
   if (result) {
     const hiddenFacts = facts ? hideText(JSON.stringify(facts)) : "";
     lines.push(result.ask + tag + hide(TRIAGE.indexOf(result.triage)) + hiddenFacts + TAG_END);
@@ -243,20 +273,20 @@ function setAsk(workspaceId, panelId, result, facts) {
   execFileSync(CMUX, args, { stdio: "ignore" });
 }
 
-function generationPath(panelId) {
-  return join(STATE_DIR, `${panelId}.gen`);
+function generationPath(sessionId) {
+  return join(STATE_DIR, `${sessionId}.gen`);
 }
 
-function bumpGeneration(panelId) {
+function bumpGeneration(sessionId) {
   mkdirSync(STATE_DIR, { recursive: true });
   const gen = `${Date.now()}-${process.pid}`;
-  writeFileSync(generationPath(panelId), gen);
+  writeFileSync(generationPath(sessionId), gen);
   return gen;
 }
 
-function isCurrent(panelId, gen) {
+function isCurrent(sessionId, gen) {
   try {
-    return readFileSync(generationPath(panelId), "utf8") === gen;
+    return readFileSync(generationPath(sessionId), "utf8") === gen;
   } catch {
     return false;
   }
@@ -268,52 +298,56 @@ function runJob(job) {
   const exchange = lastExchange(job.transcriptPath);
   if (job.reply) exchange.reply = job.reply.slice(-CONTEXT_CHARS);
   const result = triageSession(exchange, job.notice);
-  let facts = null;
+  const facts = { context: contextPercent(job.transcriptPath) };
   try {
-    facts = gitFacts(job.cwd, job.transcriptPath);
+    Object.assign(facts, gitFacts(job.cwd, job.transcriptPath));
   } catch {}
-  if (isCurrent(job.panelId, job.gen)) setAsk(job.workspaceId, job.panelId, result, facts);
+  if (isCurrent(job.sessionId, job.gen)) setAsk(job.workspaceId, job.sessionId, job.panelId, result, facts);
 }
 
-function hasVerdict(workspaceId, panelId) {
-  const tag = hiddenTag(panelId);
+function hasVerdict(workspaceId, sessionId) {
+  const tag = hiddenTag(sessionId);
   const working = tag + hide(TRIAGE.indexOf("working"));
   return workspaceDescription(workspaceId).split("\n").some((l) => belongsTo(l, tag) && !hiddenRun(l).startsWith(working));
 }
 
 // An interrupted turn fires no Stop, so the 60-second idle notification is the
 // only signal that the session is waiting on the boss again.
-function needsTriage(event, input, workspaceId, panelId) {
+function needsTriage(event, input, workspaceId) {
   if (event === "Stop") return true;
   if (event !== "Notification") return false;
-  if (input.notification_type === "idle_prompt") return !hasVerdict(workspaceId, panelId);
+  if (input.notification_type === "idle_prompt") return !hasVerdict(workspaceId, input.session_id);
   return input.notification_type === "permission_prompt" || input.notification_type === "elicitation_dialog";
 }
 
 function handleHook(input) {
   const workspaceId = process.env.CMUX_WORKSPACE_ID;
   const panelId = process.env.CMUX_PANEL_ID ?? process.env.CMUX_SURFACE_ID;
+  const sessionId = input.session_id;
   const event = input.hook_event_name;
-  if (!workspaceId || !panelId) return;
+  if (!workspaceId || !panelId || !sessionId) return;
+
+  const headless = process.env.CLAUDE_CODE_ENTRYPOINT === "sdk-cli";
+  if (headless) return;
 
   if (event === "SessionEnd") {
-    bumpGeneration(panelId);
-    setAsk(workspaceId, panelId, null);
+    bumpGeneration(sessionId);
+    setAsk(workspaceId, sessionId, panelId, null);
     return;
   }
 
   if (event === "UserPromptSubmit") {
-    bumpGeneration(panelId);
+    bumpGeneration(sessionId);
     const firstLine = String(input.prompt ?? "").trim().split("\n")[0];
     const ask = firstLine.slice(0, 90) || "Working";
-    setAsk(workspaceId, panelId, { triage: "working", ask }, workingFacts(input.cwd));
+    setAsk(workspaceId, sessionId, panelId, { triage: "working", ask }, workingFacts(input.cwd, input.transcript_path));
     return;
   }
-  if (!needsTriage(event, input, workspaceId, panelId)) return;
+  if (!needsTriage(event, input, workspaceId)) return;
 
   const job = {
-    workspaceId, panelId,
-    gen: bumpGeneration(panelId),
+    workspaceId, sessionId, panelId,
+    gen: bumpGeneration(sessionId),
     transcriptPath: input.transcript_path,
     cwd: input.cwd,
     notice: input.notification_type === "permission_prompt" ? input.message : "",
@@ -339,30 +373,34 @@ function liveSurfaceIds() {
   return ids;
 }
 
+function isHeadless(record) {
+  const args = record.stored_pid_arguments ?? [];
+  return args.includes("-p") || args.includes("--print");
+}
+
 function idleSessions() {
   const live = liveSurfaceIds();
   const listing = execFileSync(CMUX, ["sessions", "list", "--agent", "claude", "--all", "--json"], { encoding: "utf8" });
-  const newestBySurface = new Map();
-  for (const record of JSON.parse(listing).sessions ?? []) {
-    if (!live.has(record.surface_id)) continue;
-    const newest = newestBySurface.get(record.surface_id);
-    if (!newest || record.updated_at_unix > newest.updated_at_unix) newestBySurface.set(record.surface_id, record);
-  }
-  return [...newestBySurface.values()].filter(
-    (record) => record.stored_pid_exists && record.transcript_path && record.agent_lifecycle === "idle",
+  return (JSON.parse(listing).sessions ?? []).filter(
+    (record) => live.has(record.surface_id)
+      && record.stored_pid_exists
+      && record.transcript_path
+      && record.agent_lifecycle === "idle"
+      && !isHeadless(record),
   );
 }
 
 function backfill() {
   for (const session of idleSessions()) {
     const workspaceId = session.workspace_id;
-    const panelId = session.surface_id;
-    if (hasVerdict(workspaceId, panelId)) continue;
+    const sessionId = session.session_id;
+    if (hasVerdict(workspaceId, sessionId)) continue;
 
     try {
       runJob({
-        workspaceId, panelId,
-        gen: bumpGeneration(panelId),
+        workspaceId, sessionId,
+        panelId: session.surface_id,
+        gen: bumpGeneration(sessionId),
         transcriptPath: session.transcript_path,
         cwd: session.cwd,
         notice: "",

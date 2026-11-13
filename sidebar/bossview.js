@@ -12,6 +12,9 @@ const TOKEN = {
   textMuted: "#ffffff99",
   textFaint: "#ffffff66",
   branch: "#a78bfa",
+  contextOk: "#4ade80",
+  contextAlert: "#ef4444",
+  contextEmpty: "#ffffff1a",
   gitPending: "#fbbf24",
 };
 
@@ -27,6 +30,8 @@ const FONT = { "3xs": 10, "2xs": 10.5, xs: 12, smMd: 11.5, title: 15 };
 const RADIUS_LG = 10;
 const ICON_2XS = 12;
 const HEADER_HEIGHT = 48;
+const CONTEXT_SEGMENTS = 20;
+const CONTEXT_ALERT_PERCENT = 40;
 
 const YOUR_MOVE_COLOR = "#f06445";
 const COMPLETE_COLOR = "#4ade80";
@@ -78,36 +83,25 @@ function decodeFacts(hidden) {
 }
 
 function verdictFor(ws, agent) {
-  const tags = [agent.panelId, agent.surfaceId].filter(Boolean).map((id) => id.slice(0, 8).toUpperCase());
+  const tag = (agent.id ?? "").slice(0, 8).toUpperCase();
   for (const line of (ws.description ?? "").split("\n")) {
     const m = HIDDEN_RUN.exec(line);
-    if (!m || !tags.includes(decodeHex(m[2].slice(0, 16)))) continue;
+    if (!m || decodeHex(m[2].slice(0, 16)) !== tag) continue;
     const triage = TRIAGE[parseInt(decodeHex(m[2].slice(16, 18)) || "2", 16)] ?? "decide";
     return { triage, ask: m[1], facts: decodeFacts(m[2].slice(18)) };
   }
   return null;
 }
 
-// Sending a prompt replaces the verdict with a "working" one, so any other verdict
-// means that prompt has finished; it wins over cmux's "working", which sticks after
-// an interrupted turn. A prompt cancelled before any reply fires no hook at all, so
-// a "working" session with no tool activity for a while stops counting as working.
-function triageOf(status, verdict, since) {
+// Sending a prompt sets a "working" verdict. A prompt cancelled before any reply
+// fires no hook at all, so a "working" verdict with no tool activity for a while
+// stops counting as working.
+function triageOf(verdict, since) {
   const quietSeconds = epoch() - since;
   const stale = quietSeconds >= STALE_WORKING_SECONDS;
-  if (verdict?.triage === "working" && stale) return "waiting";
+  if (verdict.triage === "working" && stale) return "waiting";
 
-  if (verdict) return verdict.triage;
-
-  if (status === "working" && !stale) return "working";
-  return status === "needs_input" ? "waiting" : "untriaged";
-}
-
-function askText(triage, verdict, tab) {
-  if (verdict) return verdict.ask;
-  if (triage === "working") return clean(tab?.latestPrompt) || "Working";
-  if (triage === "waiting") return "Waiting for your input";
-  return "Not triaged yet";
+  return verdict.triage;
 }
 
 function plural(count, word) {
@@ -128,27 +122,26 @@ function leftInCheckout(facts) {
   return left;
 }
 
-function toSession(ws, a) {
+function toSession(ws, a, verdict, tab) {
   const key = ws.id + ":" + a.id;
-  const tab = (ws.tabs ?? []).find((t) => t.id === a.panelId);
-  const verdict = verdictFor(ws, a);
   const since = a.lastActivityAt ?? a.sinceEpoch ?? 0;
-  const triage = triageOf(a.status, verdict, since);
-  const facts = verdict?.facts ?? null;
+  const triage = triageOf(verdict, since);
+  const facts = verdict.facts;
   const gitLeft = facts ? leftInCheckout(facts) : [];
   const complete = triage === "done" && gitLeft.length === 0;
 
   return {
     key,
     ws, a, triage,
-    surfaceId: tab?.surfaceId ?? a.surfaceId,
+    surfaceId: tab.surfaceId ?? a.surfaceId,
     working: triage === "working",
-    name: clean(tab?.title) || clean(a.title) || ws.title,
-    branch: tab?.branch || ws.branch || "",
+    name: clean(tab.title) || clean(a.title) || ws.title,
+    branch: tab.branch || ws.branch || "",
     repo: facts?.repo || folderName(a.directory ?? ws.directory) || ws.title,
     complete,
-    ask: askText(triage, verdict, tab),
+    ask: verdict.ask,
     gitLeft,
+    context: facts?.context ?? null,
     since,
   };
 }
@@ -159,7 +152,11 @@ const sessions = computed(() => {
   const out = [];
   for (const ws of data.workspaces() ?? []) {
     for (const a of ws.agents ?? []) {
-      if (a.kind === "claude" && a.status !== "ended") out.push(toSession(ws, a));
+      if (a.kind !== "claude") continue;
+
+      const verdict = verdictFor(ws, a);
+      const tab = (ws.tabs ?? []).find((t) => t.id === a.panelId);
+      if (verdict && tab) out.push(toSession(ws, a, verdict, tab));
     }
   }
   out.sort(byRecency);
@@ -204,6 +201,24 @@ function askLine(s) {
     .frame({ maxWidth: "infinity", alignment: "leading" });
 }
 
+function contextBar(s) {
+  const color = () => (s().context >= CONTEXT_ALERT_PERCENT ? TOKEN.contextAlert : TOKEN.contextOk);
+
+  const segment = (index) => {
+    const filledFrom = () => Math.round((s().context / 100) * CONTEXT_SEGMENTS);
+    return Rectangle()
+      .fill(() => (index < filledFrom() ? color() : TOKEN.contextEmpty))
+      .frame({ height: 4, maxWidth: "infinity" })
+      .cornerRadius(1);
+  };
+  const segments = Array.from({ length: CONTEXT_SEGMENTS }, (_, index) => segment(index));
+
+  return HStack({ spacing: 8 }, [
+    HStack({ spacing: 2 }, segments),
+    Text(() => s().context + "% context").font(FONT["3xs"]).monospaced().color(color).fixedSize(),
+  ]);
+}
+
 function card(s) {
   return VStack({ alignment: "leading", spacing: 8 }, [
     HStack({ spacing: 8 }, [
@@ -227,6 +242,7 @@ function card(s) {
         .font(FONT["2xs"]).color(TOKEN.gitPending)
         .fixedSize("vertical")
         .frame({ maxWidth: "infinity", alignment: "leading" })),
+    ForEach({ items: () => (s().context === null ? [] : [s().key]), key: () => "context" }, () => contextBar(s)),
   ])
     .paddingHorizontal(14).paddingVertical(12)
     .background(TOKEN.surface)
