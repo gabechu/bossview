@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from "node:child_process";
-import { accessSync, appendFileSync, closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -20,6 +20,7 @@ function realClaude() {
 const CLAUDE = process.env.BOSSVIEW_CLAUDE ?? realClaude();
 const CMUX = process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux";
 const STATE_DIR = join(homedir(), ".bossview");
+const MODEL_CATALOG_DIR = join(homedir(), ".claude", "cache", "model-catalog");
 const TRANSCRIPT_TAIL_BYTES = 400_000;
 const CONTEXT_CHARS = 3000;
 const CONTEXT_WINDOW = 200_000;
@@ -100,9 +101,35 @@ function lastExchange(transcriptPath) {
   return { request: request.slice(0, 500), reply: reply.join("\n").slice(-CONTEXT_CHARS) };
 }
 
+// Sessions run past 200k without sending the context-1m beta, so the beta alone
+// cannot size the window. Claude Code caches each model's input limit here.
+function catalogWindows() {
+  const windows = new Map();
+  let files = [];
+  try {
+    files = readdirSync(MODEL_CATALOG_DIR).filter((name) => name.endsWith(".json"));
+  } catch {}
+  for (const name of files) {
+    try {
+      const { catalog } = JSON.parse(readFileSync(join(MODEL_CATALOG_DIR, name), "utf8"));
+      for (const model of catalog.config.models) {
+        if (model.runtime?.max_input_tokens) windows.set(model.id, model.runtime.max_input_tokens);
+      }
+    } catch {}
+  }
+  return windows;
+}
+
+function contextWindow(model, hasLongContextBeta) {
+  if (hasLongContextBeta) return LONG_CONTEXT_WINDOW;
+
+  return catalogWindows().get(model) ?? CONTEXT_WINDOW;
+}
+
 function contextPercent(transcriptPath) {
   let used = null;
-  let window = CONTEXT_WINDOW;
+  let model = null;
+  let hasLongContextBeta = false;
   for (const line of readTail(transcriptPath, TRANSCRIPT_TAIL_BYTES).split("\n")) {
     let entry;
     try {
@@ -113,18 +140,19 @@ function contextPercent(transcriptPath) {
     if (entry.isSidechain) continue;
 
     if (entry.type === "api-request") {
-      const betas = entry.params?.betas ?? [];
-      window = betas.some((beta) => beta.startsWith("context-1m")) ? LONG_CONTEXT_WINDOW : CONTEXT_WINDOW;
+      hasLongContextBeta = (entry.params?.betas ?? []).some((beta) => beta.startsWith("context-1m"));
     }
 
-    const usage = entry.type === "assistant" && entry.message?.model !== "<synthetic>" ? entry.message?.usage : null;
-    if (usage) {
+    const message = entry.type === "assistant" && entry.message?.model !== "<synthetic>" ? entry.message : null;
+    if (message?.usage) {
+      const { usage } = message;
       used = usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens + usage.output_tokens;
+      model = message.model;
     }
   }
   if (used === null) return null;
 
-  return Math.round((used / window) * 100);
+  return Math.round((used / contextWindow(model, hasLongContextBeta)) * 100);
 }
 
 function parseTriage(out, notice) {
@@ -311,6 +339,16 @@ function hasVerdict(workspaceId, sessionId) {
   return workspaceDescription(workspaceId).split("\n").some((l) => belongsTo(l, tag) && !hiddenRun(l).startsWith(working));
 }
 
+function hasWorkingCard(workspaceId, sessionId) {
+  const working = hiddenTag(sessionId) + hide(TRIAGE.indexOf("working"));
+  return workspaceDescription(workspaceId).split("\n").some((l) => hiddenRun(l).startsWith(working));
+}
+
+function workingAsk(prompt) {
+  const firstLine = String(prompt ?? "").trim().split("\n")[0];
+  return { triage: "working", ask: firstLine.slice(0, 90) || "Working" };
+}
+
 // An interrupted turn fires no Stop, so the 60-second idle notification is the
 // only signal that the session is waiting on the boss again.
 function needsTriage(event, input, workspaceId) {
@@ -338,9 +376,7 @@ function handleHook(input) {
 
   if (event === "UserPromptSubmit") {
     bumpGeneration(sessionId);
-    const firstLine = String(input.prompt ?? "").trim().split("\n")[0];
-    const ask = firstLine.slice(0, 90) || "Working";
-    setAsk(workspaceId, sessionId, panelId, { triage: "working", ask }, workingFacts(input.cwd, input.transcript_path));
+    setAsk(workspaceId, sessionId, panelId, workingAsk(input.prompt), workingFacts(input.cwd, input.transcript_path));
     return;
   }
   if (!needsTriage(event, input, workspaceId)) return;
@@ -378,38 +414,61 @@ function isHeadless(record) {
   return args.includes("-p") || args.includes("--print");
 }
 
-function idleSessions() {
+function openSessions() {
   const live = liveSurfaceIds();
   const listing = execFileSync(CMUX, ["sessions", "list", "--agent", "claude", "--all", "--json"], { encoding: "utf8" });
   return (JSON.parse(listing).sessions ?? []).filter(
     (record) => live.has(record.surface_id)
       && record.stored_pid_exists
       && record.transcript_path
-      && record.agent_lifecycle === "idle"
       && !isHeadless(record),
   );
 }
 
-function backfill() {
-  for (const session of idleSessions()) {
-    const workspaceId = session.workspace_id;
-    const sessionId = session.session_id;
-    if (hasVerdict(workspaceId, sessionId)) continue;
+function isRunning(session) {
+  return session.agent_lifecycle === "running";
+}
 
-    try {
-      runJob({
-        workspaceId, sessionId,
-        panelId: session.surface_id,
-        gen: bumpGeneration(sessionId),
-        transcriptPath: session.transcript_path,
-        cwd: session.cwd,
-        notice: "",
-        reply: "",
-      });
-    } catch (err) {
-      log(err.stack ?? String(err));
-    }
+function backfillWorking(session) {
+  const workspaceId = session.workspace_id;
+  const sessionId = session.session_id;
+  if (hasWorkingCard(workspaceId, sessionId)) return;
+
+  bumpGeneration(sessionId);
+  const { request } = lastExchange(session.transcript_path);
+  setAsk(workspaceId, sessionId, session.surface_id, workingAsk(request), workingFacts(session.cwd, session.transcript_path));
+}
+
+function backfillVerdict(session) {
+  const workspaceId = session.workspace_id;
+  const sessionId = session.session_id;
+  if (hasVerdict(workspaceId, sessionId)) return;
+
+  runJob({
+    workspaceId, sessionId,
+    panelId: session.surface_id,
+    gen: bumpGeneration(sessionId),
+    transcriptPath: session.transcript_path,
+    cwd: session.cwd,
+    notice: "",
+    reply: "",
+  });
+}
+
+function attempt(step, session) {
+  try {
+    step(session);
+  } catch (err) {
+    log(err.stack ?? String(err));
   }
+}
+
+// Each triage takes seconds, so running sessions go first while the lifecycle
+// snapshot is still fresh.
+function backfill() {
+  const sessions = openSessions();
+  for (const session of sessions.filter(isRunning)) attempt(backfillWorking, session);
+  for (const session of sessions.filter((session) => !isRunning(session))) attempt(backfillVerdict, session);
 }
 
 try {
