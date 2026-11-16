@@ -45,6 +45,10 @@ const STALE_WORKING_SECONDS = 10 * 60;
 
 const epoch = () => data.clock()?.epoch ?? 0;
 
+// The clock ticks every second. The session list reads this instead, so it
+// recomputes once a minute, not once a second.
+const minuteEpoch = computed(() => Math.floor(epoch() / 60) * 60);
+
 function ago(since) {
   if (!since) return "";
   const s = Math.max(0, Math.floor(epoch() - since));
@@ -97,7 +101,7 @@ function verdictFor(ws, agent) {
 // fires no hook at all, so a "working" verdict with no tool activity for a while
 // stops counting as working.
 function triageOf(verdict, since) {
-  const quietSeconds = epoch() - since;
+  const quietSeconds = minuteEpoch() - since;
   const stale = quietSeconds >= STALE_WORKING_SECONDS;
   if (verdict.triage === "working" && stale) return "waiting";
 
@@ -132,7 +136,8 @@ function toSession(ws, a, verdict, tab) {
 
   return {
     key,
-    ws, a, triage,
+    wsId: ws.id,
+    triage,
     surfaceId: tab.surfaceId ?? a.surfaceId,
     working: triage === "working",
     name: clean(tab.title) || clean(a.title) || ws.title,
@@ -186,8 +191,8 @@ const projects = computed(() => {
 });
 
 function jump(s) {
-  cmux("workspace.select", { workspace_id: s.ws.id });
-  if (s.surfaceId) cmux("surface.focus", { surface_id: s.surfaceId, workspace_id: s.ws.id });
+  cmux("workspace.select", { workspace_id: s.wsId });
+  if (s.surfaceId) cmux("surface.focus", { surface_id: s.surfaceId, workspace_id: s.wsId });
 }
 
 const hRule = () => Rectangle().fill(TOKEN.borderStrong).frame({ height: 1, maxWidth: "infinity" });
